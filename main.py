@@ -70,6 +70,10 @@ def login(req: LoginRequest):
         return {"token": ADMIN_TOKEN}
     raise HTTPException(status_code=401, detail="Credenciales incorrectas")
 
+def verify_admin(token: str = Header(None)):
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="No autorizado.")
+
 # ==========================================
 # 🛣️ RUTAS DE LA API
 # ==========================================
