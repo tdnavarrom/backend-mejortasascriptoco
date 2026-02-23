@@ -7,19 +7,23 @@ import json
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv # <--- Agrega esto
 
 # ==========================================
 # 🔌 CONFIGURACIÓN DE POSTGRES (SUPABASE)
 # ==========================================
-# Priorizamos la variable de entorno de Render, si no, usamos tu URI
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Cargar configuración desde el .env
+load_dotenv()
 
-# Corrección necesaria para compatibilidad con SQLAlchemy
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "postgres")
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
+engine = create_engine(DATABASE_URL)
 app = FastAPI()
 
 app.add_middleware(
