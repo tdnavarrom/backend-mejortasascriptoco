@@ -28,8 +28,8 @@ STABLE_COINS = ["usdt", "usdc", "euroc"]
 # ==========================================
 # 🔐 CONFIGURACIÓN DE SEGURIDAD
 # ==========================================
-ADMIN_USER = "admin"
-ADMIN_PASS = "admin123"
+ADMIN_USER = "m4cc1"
+ADMIN_PASS = "TDNMunera_06*"
 ADMIN_TOKEN = "crypto_spread_secret_token_2026"
 
 class LoginRequest(BaseModel):

@@ -53,9 +53,22 @@ class PlatformUpdate(BaseModel):
     is_manual: bool
     is_active: bool
 
-def verify_admin(token: str = Header(None)):
-    if token != ADMIN_TOKEN:
-        raise HTTPException(status_code=401, detail="No autorizado.")
+# ==========================================
+# 🔐 CONFIGURACIÓN DE SEGURIDAD
+# ==========================================
+ADMIN_USER = "m4cc1"
+ADMIN_PASS = "TDNMunera_06*"
+ADMIN_TOKEN = "crypto_spread_secret_token_2026"
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+@app.post("/api/login")
+def login(req: LoginRequest):
+    if req.username == ADMIN_USER and req.password == ADMIN_PASS:
+        return {"token": ADMIN_TOKEN}
+    raise HTTPException(status_code=401, detail="Credenciales incorrectas")
 
 # ==========================================
 # 🛣️ RUTAS DE LA API
