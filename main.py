@@ -10,11 +10,13 @@ from email.message import EmailMessage
 
 
 DB_FILE = "crypto_spread.db"
+POSTGRES_URI = 'postgresql://postgres:TDNMunera_06*@db.emxfimcwvsikzmlshuqh.supabase.co:5432/postgres'
+
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+   allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
