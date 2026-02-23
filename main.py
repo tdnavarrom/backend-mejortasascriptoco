@@ -99,13 +99,20 @@ def get_prices(coin: str):
     coin = coin.lower()
     results = []
     
+    # Función para intentar convertir a float, si falla devuelve el original (ej: "N.D.")
+    def parse_price(value):
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return value
+
     with engine.connect() as conn:
         # 1. Obtener plataformas activas
         active_query = text("SELECT * FROM platform_info WHERE is_active = true")
         platforms = [dict(r._mapping) for r in conn.execute(active_query)]
         active_ids = [p["id"] for p in platforms]
         
-        # 2. Precios Automáticos (Desde las tablas de scraping)
+        # 2. Precios Automáticos
         table = "stablecoin_prices" if coin in STABLE_COINS else "crypto_prices"
         try:
             price_query = text(f"SELECT * FROM {table} WHERE coin = :coin")
@@ -115,41 +122,48 @@ def get_prices(coin: str):
                 if row["exchange"] in active_ids:
                     results.append(row)
         except Exception as e:
-            print(f"Error consultando tabla {table}: {e}")
+            print(f"Error: {e}")
 
-        # 3. Inyectar Manuales
+        # 3. Inyectar Manuales (Incluyendo Lulox con N.D.)
         for p in platforms:
             if p["is_manual"]:
                 m_prices = p["manual_prices"]
                 if isinstance(m_prices, str): m_prices = json.loads(m_prices)
                 
-                # --- LÓGICA DE DETECCIÓN DE MONEDA ---
-                target_price = None
-                
-                # 1. Intento directo (ej: si buscas 'euroc', busca 'euroc' en el JSON)
-                if m_prices.get(coin, {}).get("active"):
-                    target_price = m_prices[coin]
-                
-                # 2. Lógica de puente para Fintechs (Si no hay 'euroc' directo, busca 'eur')
-                elif p["category"] == "fintech":
-                    if coin == "euroc" and m_prices.get("eur", {}).get("active"):
-                        target_price = m_prices["eur"]
-                    elif coin in ["usdc", "usdt"] and m_prices.get("usd", {}).get("active"):
-                        target_price = m_prices["usd"]
+                target_data = m_prices.get(coin)
+                if not target_data and p["category"] == "fintech":
+                    if coin in ["usdc", "usdt"]: target_data = m_prices.get("usd")
+                    elif coin == "euroc": target_data = m_prices.get("eur")
 
-                # Si encontramos un precio válido, lo inyectamos
-                if target_price:
-                    # Evitar duplicados
+                if target_data and target_data.get("active"):
+                    # Obtenemos el valor tal cual (puede ser 4000 o "N.D.")
+                    buy_val = parse_price(target_data.get("buy"))
+                    sell_val = parse_price(target_data.get("sell"))
+                    
+                    is_usd = target_data.get("currency") == "USD"
+                    
+                    # Lógica de conversión SOLO si son números
+                    if is_usd and isinstance(buy_val, (int, float)):
+                        internal_stable = m_prices.get("usdc") or m_prices.get("usd") or m_prices.get("usdt")
+                        if internal_stable and internal_stable.get("active"):
+                            trm_i_buy = parse_price(internal_stable.get("buy"))
+                            trm_i_sell = parse_price(internal_stable.get("sell"))
+                            
+                            if isinstance(trm_i_buy, (int, float)):
+                                buy_val = buy_val * trm_i_buy
+                                sell_val = sell_val * trm_i_sell
+
+                    # Evitar duplicados y añadir a resultados
                     if not any(res["exchange"] == p["id"] for res in results):
                         results.append({
                             "exchange": p["id"], 
-                            "buy_cop": target_price["buy"], 
-                            "sell_cop": target_price["sell"], 
-                            "buy_usd": 1.0, # Valor base
-                            "sell_usd": 1.0, 
-                            "spread": 0, 
-                            "direct_cop": True, 
-                            "usd_bridge": ""
+                            "buy_cop": buy_val, 
+                            "sell_cop": sell_val, 
+                            "buy_usd": target_data.get("buy") if is_usd else 0,
+                            "sell_usd": target_data.get("sell") if is_usd else 0, 
+                            "spread": 0, # No se puede calcular spread con "N.D."
+                            "direct_cop": not is_usd,
+                            "usd_bridge": "USDC" if is_usd else ""
                         })
     
     return {"coin": coin, "prices": results}
