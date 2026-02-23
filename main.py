@@ -182,10 +182,6 @@ def get_prices(coin: str):
     conn.close()
     return {"coin": coin, "prices": results}
 
-@app.post("/api/contact")
-async def submit_contact(name: str = Form(...), subject: str = Form(...), message: str = Form(...)):
-    return {"status": "success"}
-
 @app.post("/api/admin/platforms", dependencies=[Depends(verify_admin)])
 def save_platform(data: PlatformUpdate):
     conn = sqlite3.connect(DB_FILE)
@@ -209,61 +205,3 @@ def delete_platform(platform_id: str):
     conn.commit()
     conn.close()
     return {"status": "success"}
-
-
-@app.post("/api/contact")
-async def submit_contact(
-    name: str = Form(...),
-    email: str = Form(...),
-    subject: str = Form(...),
-    platformName: Optional[str] = Form(None),
-    selectedPlatform: Optional[str] = Form(None),
-    message: str = Form(...),
-    screenshot: Optional[UploadFile] = File(None)
-):
-    # ==========================================
-    # ⚠️ CONFIGURACIÓN DE CORREO (Edita esto)
-    # ==========================================
-    SENDER_EMAIL = "tu_correo@gmail.com"      # El correo desde donde se enviará
-    SENDER_PASSWORD = "tu_contraseña_de_app"  # La contraseña de aplicación de Google
-    RECEIVER_EMAIL = "mejortasacryptocolombia@gmail.com"    # El correo donde quieres recibir los mensajes
-
-    # Crear el mensaje de correo
-    msg = EmailMessage()
-    msg['Subject'] = f"CryptoSpread - Nuevo Contacto: {subject}"
-    msg['From'] = SENDER_EMAIL
-    msg['To'] = RECEIVER_EMAIL
-
-    # Construir el cuerpo del mensaje
-    body = f"""
-NUEVO MENSAJE DE CONTACTO EN CRYPTOSPREAD
------------------------------------------
-👤 Nombre: {name}
-✉️ Correo del usuario: {email}
-📌 Motivo: {subject}
-"""
-    if platformName:
-        body += f"🚀 Plataforma Nueva Sugerida: {platformName}\n"
-    if selectedPlatform:
-        body += f"🔄 Plataforma a Actualizar: {selectedPlatform}\n"
-        
-    body += f"\n📝 Mensaje del usuario:\n{message}\n"
-
-    msg.set_content(body)
-
-    # Adjuntar la imagen si el usuario subió una
-    if screenshot:
-        image_data = await screenshot.read()
-        # Intentar obtener la extensión de la imagen (ej. 'jpeg', 'png')
-        maintype, subtype = screenshot.content_type.split('/', 1) if '/' in screenshot.content_type else ('image', 'jpeg')
-        msg.add_attachment(image_data, maintype=maintype, subtype=subtype, filename=screenshot.filename)
-
-    # Enviar el correo usando el servidor SMTP de Gmail
-    try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-            smtp.login(SENDER_EMAIL, SENDER_PASSWORD)
-            smtp.send_message(msg)
-        return {"status": "success", "message": "Correo enviado correctamente"}
-    except Exception as e:
-        print(f"Error al enviar el correo: {e}")
-        raise HTTPException(status_code=500, detail="Error enviando el correo electrónico")
