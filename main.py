@@ -1,18 +1,17 @@
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict
 import datetime
 import json
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
-from dotenv import load_dotenv # <--- Agrega esto
+from dotenv import load_dotenv
 
 # ==========================================
 # 🔌 CONFIGURACIÓN DE POSTGRES (SUPABASE)
 # ==========================================
-# Cargar configuración desde el .env
 load_dotenv()
 
 DB_USER = os.getenv("DB_USER")
@@ -21,14 +20,15 @@ DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "postgres")
 
+# Importante: Algunos despliegues de Render/Supabase requieren sslmode=require
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True) # pool_pre_ping evita conexiones muertas
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], # En producción, cámbialo por tu dominio de Vercel
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,9 +36,18 @@ app.add_middleware(
 
 CRYPTO_COINS = ["btc", "bch", "eth", "sol", "ltc"]
 STABLE_COINS = ["usdt", "usdc", "euroc"]
-ADMIN_TOKEN = "crypto_spread_secret_token_2026"
 
-# Modelos Pydantic
+# ==========================================
+# 🔐 CONFIGURACIÓN DE SEGURIDAD
+# ==========================================
+ADMIN_USER = os.getenv("ADMIN_USER", "m4cc1")
+ADMIN_PASS = os.getenv("ADMIN_PASS", "TDNMunera_06*")
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "crypto_spread_secret_token_2026")
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
 class PlatformUpdate(BaseModel):
     id: str
     name: str
@@ -52,17 +61,6 @@ class PlatformUpdate(BaseModel):
     manual_prices: dict
     is_manual: bool
     is_active: bool
-
-# ==========================================
-# 🔐 CONFIGURACIÓN DE SEGURIDAD
-# ==========================================
-ADMIN_USER = "m4cc1"
-ADMIN_PASS = "TDNMunera_06*"
-ADMIN_TOKEN = "crypto_spread_secret_token_2026"
-
-class LoginRequest(BaseModel):
-    username: str
-    password: str
 
 @app.post("/api/login")
 def login(req: LoginRequest):
@@ -91,7 +89,6 @@ def get_platforms(all: bool = False):
         platforms = {}
         for r in result:
             p = dict(r._mapping)
-            # Postgres puede devolver dict o string según el driver
             if isinstance(p["manual_prices"], str):
                 p["manual_prices"] = json.loads(p["manual_prices"])
             platforms[p["id"]] = p
@@ -108,30 +105,51 @@ def get_prices(coin: str):
         platforms = [dict(r._mapping) for r in conn.execute(active_query)]
         active_ids = [p["id"] for p in platforms]
         
-        # 2. Precios Automáticos
+        # 2. Precios Automáticos (Desde las tablas de scraping)
         table = "stablecoin_prices" if coin in STABLE_COINS else "crypto_prices"
-        # Usamos :coin (parámetro nombrado de Postgres) en vez de ?
-        price_query = text(f"SELECT * FROM {table} WHERE coin = :coin")
-        prices = conn.execute(price_query, {"coin": coin})
-        
-        for r in prices:
-            row = dict(r._mapping)
-            if row["exchange"] in active_ids:
-                results.append(row)
-                
+        try:
+            price_query = text(f"SELECT * FROM {table} WHERE coin = :coin")
+            prices = conn.execute(price_query, {"coin": coin})
+            for r in prices:
+                row = dict(r._mapping)
+                if row["exchange"] in active_ids:
+                    results.append(row)
+        except Exception as e:
+            print(f"Error consultando tabla {table}: {e}")
+
         # 3. Inyectar Manuales
         for p in platforms:
             if p["is_manual"]:
                 m_prices = p["manual_prices"]
                 if isinstance(m_prices, str): m_prices = json.loads(m_prices)
                 
-                # Ejemplo lógica USDC/USDT para Fintech
-                if p["category"] == "fintech" and coin in ["usdc", "usdt"]:
-                    if m_prices.get("usd", {}).get("active"):
+                # --- LÓGICA DE DETECCIÓN DE MONEDA ---
+                target_price = None
+                
+                # 1. Intento directo (ej: si buscas 'euroc', busca 'euroc' en el JSON)
+                if m_prices.get(coin, {}).get("active"):
+                    target_price = m_prices[coin]
+                
+                # 2. Lógica de puente para Fintechs (Si no hay 'euroc' directo, busca 'eur')
+                elif p["category"] == "fintech":
+                    if coin == "euroc" and m_prices.get("eur", {}).get("active"):
+                        target_price = m_prices["eur"]
+                    elif coin in ["usdc", "usdt"] and m_prices.get("usd", {}).get("active"):
+                        target_price = m_prices["usd"]
+
+                # Si encontramos un precio válido, lo inyectamos
+                if target_price:
+                    # Evitar duplicados
+                    if not any(res["exchange"] == p["id"] for res in results):
                         results.append({
-                            "exchange": p["id"], "buy_cop": m_prices["usd"]["buy"], 
-                            "sell_cop": m_prices["usd"]["sell"], "buy_usd": 1.0, 
-                            "sell_usd": 1.0, "spread": 0, "direct_cop": True, "usd_bridge": ""
+                            "exchange": p["id"], 
+                            "buy_cop": target_price["buy"], 
+                            "sell_cop": target_price["sell"], 
+                            "buy_usd": 1.0, # Valor base
+                            "sell_usd": 1.0, 
+                            "spread": 0, 
+                            "direct_cop": True, 
+                            "usd_bridge": ""
                         })
     
     return {"coin": coin, "prices": results}
@@ -140,7 +158,6 @@ def get_prices(coin: str):
 def save_platform(data: PlatformUpdate):
     with engine.begin() as conn:
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # Sintaxis UPSERT para PostgreSQL
         query = text("""
             INSERT INTO platform_info 
             (id, name, category, logo_url, funding, trading, withdraw, deposit_networks, withdraw_networks, manual_prices, is_manual, is_active, last_updated)
