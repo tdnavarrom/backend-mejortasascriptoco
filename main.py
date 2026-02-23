@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 # 🔌 CONFIGURACIÓN DE POSTGRES (SUPABASE)
 # ==========================================
 # Priorizamos la variable de entorno de Render, si no, usamos tu URI
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:TDNMunera_06*@db.emxfimcwvsikzmlshuqh.supabase.co:5432/postgres")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Corrección necesaria para compatibilidad con SQLAlchemy
 if DATABASE_URL.startswith("postgres://"):
