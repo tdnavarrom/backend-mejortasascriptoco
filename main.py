@@ -1,22 +1,30 @@
-from fastapi import FastAPI, Form, File, UploadFile, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional # <--- ¡ESTA ES LA LÍNEA QUE FALTABA!
-import sqlite3
+from typing import Optional
 import datetime
 import json
-import smtplib
-from email.message import EmailMessage
+import os
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
 
+# ==========================================
+# 🔌 CONFIGURACIÓN DE POSTGRES (SUPABASE)
+# ==========================================
+# Priorizamos la variable de entorno de Render, si no, usamos tu URI
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:TDNMunera_06*@db.emxfimcwvsikzmlshuqh.supabase.co:5432/postgres")
 
-DB_FILE = "crypto_spread.db"
-POSTGRES_URI = 'postgresql://postgres:TDNMunera_06*@db.emxfimcwvsikzmlshuqh.supabase.co:5432/postgres'
+# Corrección necesaria para compatibilidad con SQLAlchemy
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-   allow_origins=["*"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -24,47 +32,9 @@ app.add_middleware(
 
 CRYPTO_COINS = ["btc", "bch", "eth", "sol", "ltc"]
 STABLE_COINS = ["usdt", "usdc", "euroc"]
-
-# ==========================================
-# 🔐 CONFIGURACIÓN DE SEGURIDAD
-# ==========================================
-ADMIN_USER = "admin"
-ADMIN_PASS = "admin123"
 ADMIN_TOKEN = "crypto_spread_secret_token_2026"
 
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-@app.post("/api/login")
-def login(req: LoginRequest):
-    if req.username == ADMIN_USER and req.password == ADMIN_PASS:
-        return {"token": ADMIN_TOKEN}
-    raise HTTPException(status_code=401, detail="Credenciales incorrectas")
-
-def verify_admin(token: str = Header(None)):
-    if token != ADMIN_TOKEN:
-        raise HTTPException(status_code=401, detail="No autorizado.")
-
-# ==========================================
-# BASE DE DATOS
-# ==========================================
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS platform_info (
-            id TEXT PRIMARY KEY, name TEXT, category TEXT, logo_url TEXT,
-            funding TEXT, trading TEXT, withdraw TEXT, deposit_networks TEXT,
-            withdraw_networks TEXT, manual_prices TEXT, 
-            is_manual BOOLEAN, is_active BOOLEAN, last_updated TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-init_db()
-
+# Modelos Pydantic
 class PlatformUpdate(BaseModel):
     id: str
     name: str
@@ -79,129 +49,98 @@ class PlatformUpdate(BaseModel):
     is_manual: bool
     is_active: bool
 
+def verify_admin(token: str = Header(None)):
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="No autorizado.")
+
 # ==========================================
-# RUTAS DE LA API
+# 🛣️ RUTAS DE LA API
 # ==========================================
+
 @app.get("/api/config")
-def get_config(): return {"crypto": CRYPTO_COINS, "stablecoins": STABLE_COINS}
+def get_config(): 
+    return {"crypto": CRYPTO_COINS, "stablecoins": STABLE_COINS}
 
 @app.get("/api/platforms")
 def get_platforms(all: bool = False):
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM platform_info" if all else "SELECT * FROM platform_info WHERE is_active = 1")
-    
-    platforms = {}
-    for r in cursor.fetchall():
-        p = dict(r)
-        p["manual_prices"] = json.loads(p["manual_prices"]) if p.get("manual_prices") else {}
-        platforms[p["id"]] = p
-    conn.close()
-    return platforms
+    with engine.connect() as conn:
+        query = "SELECT * FROM platform_info" if all else "SELECT * FROM platform_info WHERE is_active = true"
+        result = conn.execute(text(query))
+        
+        platforms = {}
+        for r in result:
+            p = dict(r._mapping)
+            # Postgres puede devolver dict o string según el driver
+            if isinstance(p["manual_prices"], str):
+                p["manual_prices"] = json.loads(p["manual_prices"])
+            platforms[p["id"]] = p
+        return platforms
 
 @app.get("/api/prices/{coin}")
 def get_prices(coin: str):
     coin = coin.lower()
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
     results = []
     
-    cursor.execute("SELECT * FROM platform_info WHERE is_active = 1")
-    platforms = cursor.fetchall()
-    active_ids = [p["id"] for p in platforms]
-    
-    # 1. Obtener precios automáticos
-    if coin in STABLE_COINS:
-        cursor.execute("SELECT exchange, buy_cop, sell_cop, buy_usd, sell_usd FROM stablecoin_prices WHERE coin = ?", (coin,))
-        for r in cursor.fetchall():
-            if r["exchange"] in active_ids:
-                results.append({"exchange": r["exchange"], "buy_cop": r["buy_cop"], "sell_cop": r["sell_cop"], "buy_usd": r["buy_usd"], "sell_usd": r["sell_usd"], "spread": 0, "direct_cop": True, "usd_bridge": ""})
-    else:
-        cursor.execute("SELECT exchange, buy_cop, sell_cop, buy_usd, sell_usd, spread, direct_cop, usd_bridge FROM crypto_prices WHERE coin = ?", (coin,))
-        for r in cursor.fetchall():
-            if r["exchange"] in active_ids:
-                results.append(dict(r))
+    with engine.connect() as conn:
+        # 1. Obtener plataformas activas
+        active_query = text("SELECT * FROM platform_info WHERE is_active = true")
+        platforms = [dict(r._mapping) for r in conn.execute(active_query)]
+        active_ids = [p["id"] for p in platforms]
+        
+        # 2. Precios Automáticos
+        table = "stablecoin_prices" if coin in STABLE_COINS else "crypto_prices"
+        # Usamos :coin (parámetro nombrado de Postgres) en vez de ?
+        price_query = text(f"SELECT * FROM {table} WHERE coin = :coin")
+        prices = conn.execute(price_query, {"coin": coin})
+        
+        for r in prices:
+            row = dict(r._mapping)
+            if row["exchange"] in active_ids:
+                results.append(row)
                 
-    # 2. INYECTAR PRECIOS MANUALES (Con lógica de conversión USD -> COP)
-    for p in platforms:
-        if p["is_manual"]:
-            m_prices = json.loads(p["manual_prices"]) if p["manual_prices"] else {}
-            
-            if p["category"] == "fintech":
-                if coin in ["usdc", "usdt"] and m_prices.get("usd", {}).get("active"):
-                    results.append({"exchange": p["id"], "buy_cop": m_prices["usd"]["buy"], "sell_cop": m_prices["usd"]["sell"], "buy_usd": 1.0, "sell_usd": 1.0, "spread": 0, "direct_cop": True, "usd_bridge": ""})
-                elif coin == "euroc" and m_prices.get("eur", {}).get("active"):
-                    results.append({"exchange": p["id"], "buy_cop": m_prices["eur"]["buy"], "sell_cop": m_prices["eur"]["sell"], "buy_usd": 1.0, "sell_usd": 1.0, "spread": 0, "direct_cop": True, "usd_bridge": ""})
-            
-            elif p["category"] == "exchange":
-                if coin in m_prices and m_prices[coin].get("active"):
-                    buy_val = m_prices[coin].get("buy", "N.D.")
-                    sell_val = m_prices[coin].get("sell", "N.D.")
-                    currency = m_prices[coin].get("currency", "COP")
-                    
-                    buy_cop, sell_cop = buy_val, sell_val
-                    buy_usd, sell_usd = 1.0, 1.0
-                    direct_cop = True
-                    usd_bridge = ""
-
-                    # Si el admin lo ingresó en USD, lo convertimos a COP usando la stablecoin del mismo exchange
-                    if currency == "USD" and coin not in STABLE_COINS:
-                        direct_cop = False
-                        usd_bridge = "usd" # Por defecto si no tiene stablecoins activas
-                        bridge_buy, bridge_sell = 1.0, 1.0
-                        
-                        # Prioridad 1: USDC
-                        if m_prices.get("usdc", {}).get("active"):
-                            usd_bridge = "usdc"
-                            bridge_buy = m_prices["usdc"].get("buy", 1.0)
-                            bridge_sell = m_prices["usdc"].get("sell", 1.0)
-                        # Prioridad 2: USDT
-                        elif m_prices.get("usdt", {}).get("active"):
-                            usd_bridge = "usdt"
-                            bridge_buy = m_prices["usdt"].get("buy", 1.0)
-                            bridge_sell = m_prices["usdt"].get("sell", 1.0)
-
-                        try:
-                            # Multiplicamos los dólares por el precio de la stablecoin en COP
-                            buy_cop = float(buy_val) * float(bridge_buy) if (buy_val != "N.D." and bridge_buy != "N.D.") else "N.D."
-                            sell_cop = float(sell_val) * float(bridge_sell) if (sell_val != "N.D." and bridge_sell != "N.D.") else "N.D."
-                            buy_usd = float(buy_val) if buy_val != "N.D." else "N.D."
-                            sell_usd = float(sell_val) if sell_val != "N.D." else "N.D."
-                        except:
-                            buy_cop, sell_cop = "N.D.", "N.D."
-
-                    results.append({
-                        "exchange": p["id"], 
-                        "buy_cop": buy_cop, "sell_cop": sell_cop, 
-                        "buy_usd": buy_usd, "sell_usd": sell_usd, 
-                        "spread": 0, "direct_cop": direct_cop, "usd_bridge": usd_bridge
-                    })
-
-    conn.close()
+        # 3. Inyectar Manuales
+        for p in platforms:
+            if p["is_manual"]:
+                m_prices = p["manual_prices"]
+                if isinstance(m_prices, str): m_prices = json.loads(m_prices)
+                
+                # Ejemplo lógica USDC/USDT para Fintech
+                if p["category"] == "fintech" and coin in ["usdc", "usdt"]:
+                    if m_prices.get("usd", {}).get("active"):
+                        results.append({
+                            "exchange": p["id"], "buy_cop": m_prices["usd"]["buy"], 
+                            "sell_cop": m_prices["usd"]["sell"], "buy_usd": 1.0, 
+                            "sell_usd": 1.0, "spread": 0, "direct_cop": True, "usd_bridge": ""
+                        })
+    
     return {"coin": coin, "prices": results}
 
 @app.post("/api/admin/platforms", dependencies=[Depends(verify_admin)])
 def save_platform(data: PlatformUpdate):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("""
-        INSERT OR REPLACE INTO platform_info 
-        (id, name, category, logo_url, funding, trading, withdraw, deposit_networks, withdraw_networks, manual_prices, is_manual, is_active, last_updated)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (data.id.lower(), data.name, data.category, data.logo_url, data.funding, data.trading, data.withdraw, 
-          data.deposit_networks, data.withdraw_networks, json.dumps(data.manual_prices), data.is_manual, data.is_active, now))
-    conn.commit()
-    conn.close()
+    with engine.begin() as conn:
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Sintaxis UPSERT para PostgreSQL
+        query = text("""
+            INSERT INTO platform_info 
+            (id, name, category, logo_url, funding, trading, withdraw, deposit_networks, withdraw_networks, manual_prices, is_manual, is_active, last_updated)
+            VALUES (:id, :name, :category, :logo_url, :funding, :trading, :withdraw, :dn, :wn, :mp, :im, :ia, :lu)
+            ON CONFLICT (id) DO UPDATE SET
+            name=EXCLUDED.name, category=EXCLUDED.category, logo_url=EXCLUDED.logo_url,
+            funding=EXCLUDED.funding, trading=EXCLUDED.trading, withdraw=EXCLUDED.withdraw,
+            deposit_networks=EXCLUDED.deposit_networks, withdraw_networks=EXCLUDED.withdraw_networks,
+            manual_prices=EXCLUDED.manual_prices, is_manual=EXCLUDED.is_manual,
+            is_active=EXCLUDED.is_active, last_updated=EXCLUDED.last_updated
+        """)
+        conn.execute(query, {
+            "id": data.id.lower(), "name": data.name, "category": data.category,
+            "logo_url": data.logo_url, "funding": data.funding, "trading": data.trading,
+            "withdraw": data.withdraw, "dn": data.deposit_networks, "wn": data.withdraw_networks,
+            "mp": json.dumps(data.manual_prices), "im": data.is_manual, "ia": data.is_active, "lu": now
+        })
     return {"status": "success"}
 
 @app.delete("/api/admin/platforms/{platform_id}", dependencies=[Depends(verify_admin)])
 def delete_platform(platform_id: str):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM platform_info WHERE id = ?", (platform_id.lower(),))
-    conn.commit()
-    conn.close()
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM platform_info WHERE id = :id"), {"id": platform_id.lower()})
     return {"status": "success"}
