@@ -21,7 +21,7 @@ jobs:
 
       - name: Instalar dependencias
         run: |
-          pip install -r requirements.txt
+          pip install -r requirements-py39.txt
 
       - name: Ejecutar Fetcher
         env:
@@ -31,4 +31,7 @@ jobs:
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_PORT: ${{ secrets.DB_PORT }}
           DB_NAME: ${{ secrets.DB_NAME }}
-        run: python fetcher.py
+          ADMIN_USER: ${{ secrets.ADMIN_USER }}
+          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+        run: python -m app.fetcher
