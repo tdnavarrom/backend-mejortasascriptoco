@@ -45,6 +45,18 @@ jobs:
           set -o pipefail
           python -m app.fetcher 2>&1 | tee fetcher.log
 
+      - name: Detectar errores de proveedores
+        id: provider_health
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          if grep -Eiq "request failed for https?://|timed out|client error|server error|traceback \\(most recent call last\\)" fetcher.log; then
+            echo "::warning::Se detectaron fallos de proveedores en fetcher.log"
+            echo "provider_failure=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "provider_failure=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Subir log del fetcher
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -54,17 +66,17 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Notificar fallo en GitHub
-        if: ${{ failure() }}
+      - name: Notificar incidente de proveedores en GitHub
+        if: ${{ steps.provider_health.outputs.provider_failure == 'true' || failure() }}
         uses: actions/github-script@v8
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
-            const title = 'Fetcher cron failure';
+            const title = 'Fetcher provider incident';
             const body = [
-              'El workflow del fetcher falló.',
+              'El workflow del fetcher detectó un incidente en uno o más proveedores.',
               '',
               `- Workflow: ${context.workflow}`,
               `- Job: ${context.job}`,
@@ -73,6 +85,7 @@ jobs:
               `- Evento: ${context.eventName}`,
               `- Run: ${runUrl}`,
               '',
+              'El job pudo completar parcialmente, pero al menos una API falló durante la recolección.',
               'Revisa el artifact `fetcher-log-*` para ver el log completo.',
             ].join('\n');
 
@@ -80,7 +93,7 @@ jobs:
               owner,
               repo,
               state: 'open',
-              labels: 'fetcher-failure',
+              labels: 'fetcher-provider-incident',
               per_page: 10,
             });
 
@@ -99,6 +112,6 @@ jobs:
                 repo,
                 title,
                 body,
-                labels: ['fetcher-failure', 'automated'],
+                labels: ['fetcher-provider-incident', 'automated'],
               });
             }
