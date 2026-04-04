@@ -54,6 +54,7 @@ BINANCE_SYMBOLS = {"euroc": "EURUSDT"}
 BITSO_QUOTE_PRIORITY    = ("cop", "usdt", "usd", "usds")
 BINANCE_QUOTE_PRIORITY  = ("COP", "USDT", "USDC", "FDUSD", "USD", "USD1", "BUSD", "TUSD")
 CRYPTOMKT_QUOTE_PRIORITY = ("COP", "USDT", "USDC", "USD")
+CRYPTOMKT_DIRECT_COP_MAX_DEVIATION = 0.20
 
 # All quote currencies that are considered "1 USD ≈ 1 unit", used to derive
 # a bridge rate multiplier for COP conversion.
@@ -605,6 +606,80 @@ def get_ticker_prices(ticker: dict[str, Any]) -> tuple[float, float]:
     return ask_price, bid_price
 
 
+def select_cryptomkt_market(
+    coin: str,
+    market_data: dict[str, Any],
+    reference_bridge: BridgeRate,
+) -> Optional[tuple[str, str]]:
+    """
+    Pick the best CryptoMKT market for `coin`, but reject obviously bad COP quotes.
+
+    Normal behavior prefers *COP pairs because they are direct prices. However,
+    CryptoMKT occasionally reports distorted COP books (for example BTCCOP far away
+    from BTCUSDT × bridge). When that happens, we fall back to the first sane
+    USD-like market, usually *USDT.
+    """
+    primary = select_cryptomkt_symbol(coin, market_data)
+    if not primary:
+        return None
+
+    symbol, quote = primary
+    if quote != "COP":
+        return primary
+
+    cop_ticker = market_data.get(symbol, {})
+    cop_ask, cop_bid = get_ticker_prices(cop_ticker)
+    if cop_ask <= 0 or cop_bid <= 0:
+        # Direct COP market is unusable; try the first available USD-like fallback.
+        for fallback_quote in CRYPTOMKT_QUOTE_PRIORITY[1:]:
+            fallback_symbol = f"{coin.upper()}{fallback_quote}"
+            if fallback_symbol in market_data:
+                return fallback_symbol, fallback_quote
+        return primary
+
+    cop_mid = (cop_ask + cop_bid) / 2
+
+    for fallback_quote in CRYPTOMKT_QUOTE_PRIORITY[1:]:
+        fallback_symbol = f"{coin.upper()}{fallback_quote}"
+        fallback_ticker = market_data.get(fallback_symbol)
+        if not fallback_ticker:
+            continue
+
+        fallback_ask, fallback_bid = get_ticker_prices(fallback_ticker)
+        if fallback_ask <= 0 or fallback_bid <= 0:
+            continue
+
+        bridge = get_usd_like_bridge(fallback_quote, reference_bridge)
+        fallback_prices = _resolve_bridge_prices(
+            fallback_ask,
+            fallback_bid,
+            fallback_quote,
+            reference_bridge,
+            bridge,
+        )
+        if fallback_prices is None:
+            continue
+
+        fallback_buy_cop, fallback_sell_cop, *_ = fallback_prices
+        fallback_mid = (fallback_buy_cop + fallback_sell_cop) / 2
+        if fallback_mid <= 0:
+            continue
+
+        deviation = abs(cop_mid - fallback_mid) / fallback_mid
+        if deviation > CRYPTOMKT_DIRECT_COP_MAX_DEVIATION:
+            print(
+                f"⚠️ cryptomkt: {symbol} looks off "
+                f"({cop_mid:.2f} COP vs {fallback_symbol}≈{fallback_mid:.2f} COP); "
+                f"using {fallback_symbol} instead."
+            )
+            return fallback_symbol, fallback_quote
+
+        # The direct COP quote is close enough to the USD-derived market.
+        return primary
+
+    return primary
+
+
 # ── Exchange price fetchers ───────────────────────────────────────────────────
 
 async def fetch_binance_prices(
@@ -710,7 +785,7 @@ async def fetch_cryptomkt_prices(
     records: list[PriceRecord] = []
 
     for coin in TARGET_COINS:
-        selection = select_cryptomkt_symbol(coin, data)
+        selection = select_cryptomkt_market(coin, data, reference_bridge)
         if not selection:
             continue
 
