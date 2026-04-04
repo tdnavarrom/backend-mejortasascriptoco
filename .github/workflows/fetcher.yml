@@ -6,9 +6,14 @@ on:
     - cron: '*/15 * * * *'
   workflow_dispatch: # Permite ejecutarlo manualmente desde el botón en GitHub
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout del código
@@ -24,6 +29,8 @@ jobs:
           pip install -r requirements.txt
 
       - name: Ejecutar Fetcher
+        id: fetcher
+        shell: bash
         env:
           # Aquí conectamos los secretos de GitHub con las variables que espera tu script
           DB_USER: ${{ secrets.DB_USER }}
@@ -34,4 +41,64 @@ jobs:
           ADMIN_USER: ${{ secrets.ADMIN_USER }}
           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
-        run: python -m app.fetcher
+        run: |
+          set -o pipefail
+          python -m app.fetcher 2>&1 | tee fetcher.log
+
+      - name: Subir log del fetcher
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fetcher-log-${{ github.run_id }}
+          path: fetcher.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Notificar fallo en GitHub
+        if: ${{ failure() }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            const title = 'Fetcher cron failure';
+            const body = [
+              'El workflow del fetcher falló.',
+              '',
+              `- Workflow: ${context.workflow}`,
+              `- Job: ${context.job}`,
+              `- Branch: ${context.ref}`,
+              `- Commit: ${context.sha}`,
+              `- Evento: ${context.eventName}`,
+              `- Run: ${runUrl}`,
+              '',
+              'Revisa el artifact `fetcher-log-*` para ver el log completo.',
+            ].join('\n');
+
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: 'open',
+              labels: 'fetcher-failure',
+              per_page: 10,
+            });
+
+            const existing = issues.find(issue => issue.title === title);
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner,
+                repo,
+                title,
+                body,
+                labels: ['fetcher-failure', 'automated'],
+              });
+            }
