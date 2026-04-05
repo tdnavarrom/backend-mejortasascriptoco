@@ -1,8 +1,10 @@
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
 
 from app.core.config import settings
+from app.i18n import UNAUTHORIZED, get_lang, t
 
 
-def verify_admin(token: str = Header(None)):
+def verify_admin(request: Request, token: str = Header(None)):
     if token != settings.admin_token:
-        raise HTTPException(status_code=401, detail="No autorizado.")
+        lang = get_lang(request)
+        raise HTTPException(status_code=401, detail=t(UNAUTHORIZED, lang))

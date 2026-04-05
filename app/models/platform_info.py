@@ -16,8 +16,17 @@ class PlatformInfo(SQLModel, table=True):
     funding: str
     trading: str
     withdraw: str
+    website_url: str = ""
+    referral_url: str = ""
+    referral_code: str = ""
+    cta_label: str = ""
     deposit_networks: str
     withdraw_networks: str
+    funding_en: str = ""
+    trading_en: str = ""
+    withdraw_en: str = ""
+    deposit_networks_en: str = ""
+    withdraw_networks_en: str = ""
     manual_prices: str = Field(sa_column=Column(Text))
     is_manual: bool
     is_active: bool
