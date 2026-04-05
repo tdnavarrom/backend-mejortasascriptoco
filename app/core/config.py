@@ -12,6 +12,8 @@ class Settings:
     db_host: Optional[str] = os.getenv("DB_HOST")
     db_port: str = os.getenv("DB_PORT", "5432")
     db_name: str = os.getenv("DB_NAME", "postgres")
+    cron_secret: Optional[str] = os.getenv("CRON_SECRET")
+    cron_allowed_ips_raw: str = os.getenv("CRON_ALLOWED_IPS", "")
 
     admin_user: str = os.getenv("ADMIN_USER", "m4cc1")
     admin_pass: str = os.getenv("ADMIN_PASS", "TDNMunera_06*")
@@ -23,6 +25,14 @@ class Settings:
     @property
     def database_url(self) -> str:
         return f"postgresql://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"
+
+    @property
+    def cron_allowed_ips(self) -> list[str]:
+        return [
+            ip.strip()
+            for ip in self.cron_allowed_ips_raw.split(",")
+            if ip.strip()
+        ]
 
 
 settings = Settings()
