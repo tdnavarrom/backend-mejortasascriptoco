@@ -26,3 +26,4 @@ def create_db_and_tables():
         connection.execute(text("ALTER TABLE platform_info ADD COLUMN IF NOT EXISTS withdraw_en VARCHAR DEFAULT ''"))
         connection.execute(text("ALTER TABLE platform_info ADD COLUMN IF NOT EXISTS deposit_networks_en VARCHAR DEFAULT ''"))
         connection.execute(text("ALTER TABLE platform_info ADD COLUMN IF NOT EXISTS withdraw_networks_en VARCHAR DEFAULT ''"))
+        connection.execute(text("ALTER TABLE platform_info ADD COLUMN IF NOT EXISTS logo_dark_url VARCHAR DEFAULT ''"))

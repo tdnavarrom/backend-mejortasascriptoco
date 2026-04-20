@@ -46,6 +46,7 @@ def save_platform(data: PlatformUpdate, session: Session = Depends(get_session))
         name=data.name,
         category=data.category,
         logo_url=data.logo_url,
+        logo_dark_url=data.logo_dark_url,
         funding=data.funding,
         trading=data.trading,
         withdraw=data.withdraw,

@@ -8,6 +8,7 @@ class PlatformUpdate(BaseModel):
     name: str
     category: str
     logo_url: str
+    logo_dark_url: str = ""
     funding: str
     trading: str
     withdraw: str
